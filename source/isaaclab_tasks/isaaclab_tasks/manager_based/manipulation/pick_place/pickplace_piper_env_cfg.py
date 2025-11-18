@@ -22,12 +22,15 @@ from isaaclab.envs.mdp.actions.pink_actions_cfg import PinkInverseKinematicsActi
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
+from isaaclab.actuators import ImplicitActuatorCfg
 
 from . import mdp
 
@@ -43,7 +46,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
     # Table
     packing_table = AssetBaseCfg(
         prim_path="/World/envs/env_.*/PackingTable",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.55, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.0, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
         spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/PackingTable/packing_table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
@@ -52,11 +55,20 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
 
     object = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[-0.45, 0.45, 0.9996], rot=[1, 0, 0, 0]),
-        spawn=UsdFileCfg(
-            usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/pick_place_task/pick_place_assets/steering_wheel.usd",
-            scale=(0.75, 0.75, 0.75),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.1, 0.3, 1.0203], rot=[1, 0, 0, 0]),
+        spawn=CuboidCfg(
+            size=(0.04, 0.04, 0.04),  # 4cm cube - appropriate size for Piper robot
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                solver_position_iteration_count=16,
+                solver_velocity_iteration_count=1,
+                max_angular_velocity=1000.0,
+                max_linear_velocity=1000.0,
+                max_depenetration_velocity=5.0,
+                disable_gravity=False,
+            ),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.8)),  # Blue color
         ),
     )
 
@@ -64,16 +76,16 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
     robot: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=UsdFileCfg(
-            usd_path="~/piper_ros/src/piper_description/urdf/piper_description/piper_description.usd",
+            usd_path="/home/neubility-sim/piper_ros/src/piper_description/urdf/piper_description/piper_description.usd",
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=False,
                 solver_position_iteration_count=4,
                 solver_velocity_iteration_count=0,
-                fix_base=True,  # 팔이 고정된 로봇으로 가정합니다.
+                fix_root_link=True,  # 팔이 고정된 로봇으로 가정합니다.
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.0),
+            pos=(0.0, 0.0, 0.9996),
             joint_pos={
                 "joint1": 0.0,
                 "joint2": 0.0,
@@ -81,14 +93,58 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
                 "joint4": 0.0,
                 "joint5": 0.0,
                 "joint6": 0.0,
-                "gripper": 0.0,
+                "joint7": 0.0,
+                "joint8": 0.0,
             },
         ),
         actuators={
-            "arm": sim_utils.ImplicitActuatorCfg(
-                joint_names=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"],
-                stiffness=100.0,
-                damping=10.0,
+            "arm": ImplicitActuatorCfg(
+                joint_names_expr=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7", "joint8"],
+                # Effort limits from URDF (N⋅m for revolute, N for prismatic)
+                effort_limit_sim={
+                    "joint1": 100.0,
+                    "joint2": 100.0,
+                    "joint3": 100.0,
+                    "joint4": 100.0,
+                    "joint5": 100.0,
+                    "joint6": 100.0,
+                    "joint7": 10.0,  # Gripper has lower effort limit
+                    "joint8": 10.0,
+                },
+                # Velocity limits from URDF (rad/s for revolute, m/s for prismatic)
+                velocity_limit_sim={
+                    "joint1": 5.0,
+                    "joint2": 5.0,
+                    "joint3": 5.0,
+                    "joint4": 5.0,
+                    "joint5": 5.0,
+                    "joint6": 3.0,
+                    "joint7": 1.0,  # Gripper has lower velocity limit
+                    "joint8": 1.0,
+                },
+                # PD gains - typical values for arm control
+                # Stiffness: higher for better position tracking
+                stiffness={
+                    "joint1": 100.0,
+                    "joint2": 100.0,
+                    "joint3": 100.0,
+                    "joint4": 100.0,
+                    "joint5": 100.0,
+                    "joint6": 100.0,
+                    "joint7": 50.0,  # Lower stiffness for gripper
+                    "joint8": 50.0,
+                },
+                # Damping: critical damping ratio ~0.7-1.0
+                damping={
+                    "joint1": 10.0,
+                    "joint2": 10.0,
+                    "joint3": 10.0,
+                    "joint4": 10.0,
+                    "joint5": 10.0,
+                    "joint6": 10.0,
+                    "joint7": 5.0,  # Lower damping for gripper
+                    "joint8": 5.0,
+                },
             ),
         },
     )
@@ -114,10 +170,18 @@ class ActionsCfg:
     """Action specifications for the MDP."""
 
     # Use a simple joint position controller for the arm
+    # Use joint-specific scales based on URDF limits to ensure all joints can move effectively
     arm_action = base_mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"],
-        scale=0.5,
+        joint_names=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],  # Exclude gripper joints
+        scale={
+            "joint1": 1.0,  # Range: [-2.618, 2.168] -> scale 1.0 covers ±1.0 rad
+            "joint2": 1.0,  # Range: [0, 3.14] -> scale 1.0 covers ±1.0 rad from default
+            "joint3": 1.0,  # Range: [-2.967, 0] -> scale 1.0 covers ±1.0 rad
+            "joint4": 0.8,  # Range: [-1.745, 1.745] -> scale 0.8 covers ±0.8 rad
+            "joint5": 0.6,  # Range: [-1.22, 1.22] -> scale 0.6 covers ±0.6 rad
+            "joint6": 1.0,  # Range: [-2.0944, 2.0944] -> scale 1.0 covers ±1.0 rad
+        },
         use_default_offset=True,
     )
 
@@ -141,7 +205,7 @@ class ObservationsCfg:
         object_rot = ObsTerm(func=base_mdp.root_quat_w, params={"asset_cfg": SceneEntityCfg("object")})
 
         # TODO: 로봇의 end-effector 위치를 관찰에 추가하는 것이 좋습니다.
-        eef_pos = ObsTerm(func=base_mdp.body_pos_w, params={"asset_cfg": SceneEntityCfg("robot", body_names=["link7"])})
+        eef_pos = ObsTerm(func=base_mdp.body_pose_w, params={"asset_cfg": SceneEntityCfg("robot", body_names=["link7"])})
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -161,8 +225,84 @@ class TerminationsCfg:
         func=base_mdp.root_height_below_minimum, params={"minimum_height": 0.5, "asset_cfg": SceneEntityCfg("object")}
     )
 
-    # TODO: 로봇의 end-effector 이름으로 수정해야 합니다.
-    success = DoneTerm(func=mdp.task_done_pick_place, params={"task_link_name": "link7"})
+    # Success condition: object placed in target region
+    # Note: right_wrist_max_x is relaxed for Piper robot (0.5 instead of 0.26)
+    # This allows the robot to complete the task without requiring full retraction
+    success = DoneTerm(
+        func=mdp.task_done_pick_place,
+        params={
+            "task_link_name": "link7",
+            "right_wrist_max_x": 0.5,  # Relaxed from default 0.26 for Piper robot workspace
+        },
+    )
+
+
+@configclass
+class RewardsCfg:
+    """Reward terms for the MDP."""
+
+    # 1. Reach the object with end-effector (dense reward for approaching object)
+    # Increased weight to prioritize reaching phase - this is critical for learning
+    reaching_object = RewTerm(
+        func=mdp.object_ee_distance,
+        params={"std": 0.1, "eef_link_name": "link7"},
+        weight=5.0,  # Increased from 1.0 to prioritize reach phase
+    )
+    
+    # 1b. Fine-grained reaching reward for precise approach (similar to reach task)
+    reaching_object_fine = RewTerm(
+        func=mdp.object_ee_distance,
+        params={"std": 0.05, "eef_link_name": "link7"},  # Smaller std for fine-grained reward
+        weight=2.0,  # Additional reward when very close to object
+    )
+
+    # 2. Lift the object above minimum height (sparse reward when lifted)
+    lifting_object = RewTerm(
+        func=mdp.object_is_lifted,
+        params={"minimal_height": 0.04},
+        weight=10.0,
+    )
+
+    # 3. Place the object near the target region (dense reward based on distance)
+    # Reduced weight to prevent interference with reach phase learning
+    object_goal_placement = RewTerm(
+        func=mdp.object_goal_placement,
+        params={
+            "std": 0.3,
+            "minimal_height": 0.04,
+            "min_x": 0.40,
+            "max_x": 0.85,
+            "min_y": 0.35,
+            "max_y": 0.60,
+            "max_height": 1.10,
+        },
+        weight=5.0,  # Reduced from 10.0 to balance with reach phase
+    )
+
+    # 4. Fine-grained placement reward for precise positioning (only when close)
+    object_goal_placement_fine = RewTerm(
+        func=mdp.object_goal_placement,
+        params={
+            "std": 0.05,
+            "minimal_height": 0.04,
+            "min_x": 0.40,
+            "max_x": 0.85,
+            "min_y": 0.35,
+            "max_y": 0.60,
+            "max_height": 1.10,
+        },
+        weight=3.0,
+    )
+
+    # 5. Action penalty to encourage smooth motions (small penalty)
+    action_rate = RewTerm(func=base_mdp.action_rate_l2, weight=-1e-4)
+
+    # 6. Joint velocity penalty (small penalty)
+    joint_vel = RewTerm(
+        func=base_mdp.joint_vel_l2,
+        weight=-1e-4,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
 
 
 @configclass
@@ -191,16 +331,20 @@ class PickPlacePiperEnvCfg(ManagerBasedRLEnvCfg):
 
     # Scene settings
     scene: ObjectTableSceneCfg = ObjectTableSceneCfg(num_envs=1, env_spacing=2.5, replicate_physics=True)
+    
+    # Enable debug print to see USD default values vs configured values
+    # Set to True to see what values are actually used from USD file
+    scene.robot.actuator_value_resolution_debug_print = True
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     # MDP settings
+    rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events = EventCfg()
 
     # Unused managers
     commands = None
-    rewards = None
     curriculum = None
 
     def __post_init__(self):

@@ -63,6 +63,8 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.pickplace_piper_env_cfg:PickPlacePiperEnvCfg",
         "robomimic_bc_cfg_entry_point": f"{agents.__name__}:robomimic/bc_rnn_low_dim.json",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickPlacePiperPPORunnerCfg",
     },
     disable_env_checker=True,
 )
