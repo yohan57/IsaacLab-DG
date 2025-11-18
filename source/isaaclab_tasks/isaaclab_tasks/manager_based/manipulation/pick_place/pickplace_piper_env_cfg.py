@@ -169,20 +169,21 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    # Use a simple joint position controller for the arm
-    # Use joint-specific scales based on URDF limits to ensure all joints can move effectively
+    # Action for the arm joints (1-6)
     arm_action = base_mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],  # Exclude gripper joints
-        scale={
-            "joint1": 1.0,  # Range: [-2.618, 2.168] -> scale 1.0 covers ±1.0 rad
-            "joint2": 1.0,  # Range: [0, 3.14] -> scale 1.0 covers ±1.0 rad from default
-            "joint3": 1.0,  # Range: [-2.967, 0] -> scale 1.0 covers ±1.0 rad
-            "joint4": 0.8,  # Range: [-1.745, 1.745] -> scale 0.8 covers ±0.8 rad
-            "joint5": 0.6,  # Range: [-1.22, 1.22] -> scale 0.6 covers ±0.6 rad
-            "joint6": 1.0,  # Range: [-2.0944, 2.0944] -> scale 1.0 covers ±1.0 rad
-        },
+        joint_names=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
+        scale=1.0,  # Using a uniform scale for simplicity, can be tuned later
         use_default_offset=True,
+    )
+
+    # Action for the gripper joints (7-8)
+    gripper_action = base_mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=["joint7", "joint8"],
+        scale=1.0,  # Action value from -1.0 (closed) to 1.0 (open)
+        offset=(0.0, 0.0),
+        use_default_offset=False,
     )
 
 
@@ -194,18 +195,25 @@ class ObservationsCfg:
     class PolicyCfg(ObsGroup):
         """Observations for policy group with state values."""
 
-        # TODO: 로봇에 맞게 관찰(observation) 항들을 수정해야 합니다.
-        # 기본 관찰: 마지막 액션, 로봇 관절 상태, 물체 위치/회전
+        # Basic observations
         actions = ObsTerm(func=base_mdp.last_action)
-
         robot_joint_pos = ObsTerm(func=base_mdp.joint_pos, params={"asset_cfg": SceneEntityCfg("robot")})
         robot_joint_vel = ObsTerm(func=base_mdp.joint_vel, params={"asset_cfg": SceneEntityCfg("robot")})
-
-        object_pos = ObsTerm(func=base_mdp.root_pos_w, params={"asset_cfg": SceneEntityCfg("object")})
-        object_rot = ObsTerm(func=base_mdp.root_quat_w, params={"asset_cfg": SceneEntityCfg("object")})
-
-        # TODO: 로봇의 end-effector 위치를 관찰에 추가하는 것이 좋습니다.
         eef_pos = ObsTerm(func=base_mdp.body_pose_w, params={"asset_cfg": SceneEntityCfg("robot", body_names=["link7"])})
+
+        # Added observations for better learning
+        # 1. Object position relative to the end-effector
+        object_relative_eef_pos = ObsTerm(
+            func=mdp.object_ee_position, params={"eef_link_name": "link7"}
+        )
+        # 2. Gripper joint positions (to know if it's open or closed)
+        gripper_joint_pos = ObsTerm(
+            func=base_mdp.joint_pos,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=["joint7", "joint8"])},
+        )
+        # 3. Object full pose
+        object_pose = ObsTerm(func=base_mdp.root_pose_w, params={"asset_cfg": SceneEntityCfg("object")})
+
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -241,30 +249,28 @@ class TerminationsCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
 
-    # 1. Reach the object with end-effector (dense reward for approaching object)
-    # Increased weight to prioritize reaching phase - this is critical for learning
+    # 1. Reach the object with end-effector
     reaching_object = RewTerm(
         func=mdp.object_ee_distance,
         params={"std": 0.1, "eef_link_name": "link7"},
-        weight=5.0,  # Increased from 1.0 to prioritize reach phase
-    )
-    
-    # 1b. Fine-grained reaching reward for precise approach (similar to reach task)
-    reaching_object_fine = RewTerm(
-        func=mdp.object_ee_distance,
-        params={"std": 0.05, "eef_link_name": "link7"},  # Smaller std for fine-grained reward
-        weight=2.0,  # Additional reward when very close to object
+        weight=5.0,
     )
 
-    # 2. Lift the object above minimum height (sparse reward when lifted)
+    # 2. Grasping reward to encourage closing the gripper near the object
+    grasping_object = RewTerm(
+        func=mdp.grasp_reward,
+        params={"eef_link_name": "link7", "std": 0.05},
+        weight=2.5,
+    )
+
+    # 3. Lift the object
     lifting_object = RewTerm(
         func=mdp.object_is_lifted,
         params={"minimal_height": 0.04},
         weight=10.0,
     )
 
-    # 3. Place the object near the target region (dense reward based on distance)
-    # Reduced weight to prevent interference with reach phase learning
+    # 4. Place the object near the target
     object_goal_placement = RewTerm(
         func=mdp.object_goal_placement,
         params={
@@ -276,28 +282,11 @@ class RewardsCfg:
             "max_y": 0.60,
             "max_height": 1.10,
         },
-        weight=5.0,  # Reduced from 10.0 to balance with reach phase
+        weight=5.0,
     )
 
-    # 4. Fine-grained placement reward for precise positioning (only when close)
-    object_goal_placement_fine = RewTerm(
-        func=mdp.object_goal_placement,
-        params={
-            "std": 0.05,
-            "minimal_height": 0.04,
-            "min_x": 0.40,
-            "max_x": 0.85,
-            "min_y": 0.35,
-            "max_y": 0.60,
-            "max_height": 1.10,
-        },
-        weight=3.0,
-    )
-
-    # 5. Action penalty to encourage smooth motions (small penalty)
+    # Regularization penalties
     action_rate = RewTerm(func=base_mdp.action_rate_l2, weight=-1e-4)
-
-    # 6. Joint velocity penalty (small penalty)
     joint_vel = RewTerm(
         func=base_mdp.joint_vel_l2,
         weight=-1e-4,
@@ -316,8 +305,9 @@ class EventCfg:
         mode="reset",
         params={
             "pose_range": {
-                "x": [-0.01, 0.01],
-                "y": [-0.01, 0.01],
+                "x": [-0.1, 0.1],
+                "y": [-0.1, 0.1],
+                "z": [0.0, 0.0], # Keep z constant
             },
             "velocity_range": {},
             "asset_cfg": SceneEntityCfg("object"),
